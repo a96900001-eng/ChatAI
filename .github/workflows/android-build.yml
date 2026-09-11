@@ -63,14 +63,14 @@ jobs:
           ./gradlew bundleRelease
 
       - name: Upload debug APK to artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: chatai-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
 
       - name: Upload release AAB to artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: chatai-release-aab
           path: android/app/build/outputs/bundle/release/app-release.aab
