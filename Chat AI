@@ -1,0 +1,846 @@
+import React, { useState, useRef, useEffect, useCallback } from "react";
+import { Send, Plus, Menu, X, Sparkles, Trash2, LogOut, Eye, EyeOff, AlertCircle, Copy, Check, Pencil, RotateCcw } from "lucide-react";
+
+const COLORS = {
+  bg: "#12151A",
+  panel: "#1A1E25",
+  panelBorder: "#2A2F38",
+  ink: "#ECEAE4",
+  inkDim: "#9CA3AF",
+  amber: "#E8A33D",
+  teal: "#3FA796",
+  danger: "#E8664D",
+};
+
+const STARTER_PROMPTS = [
+  "Help me write a business plan",
+  "Give me an easy way to learn Python",
+  "Improve this paragraph",
+  "Write a professional email",
+];
+
+/* ---------------------------------------------------------------------
+   BACKEND URL
+   Change this to wherever you deploy the /backend folder that ships
+   alongside this file.
+   - Local web dev:            http://localhost:4000
+   - Android emulator ->host:  http://10.0.2.2:4000
+   - Real device / production: https://your-api-domain.com  (MUST be
+     HTTPS — Android 9+ blocks plain HTTP by default, and Apple/Google
+     both require it for a Play Store / App Store submission)
+--------------------------------------------------------------------- */
+const API_BASE = (import.meta.env.VITE_API_BASE || "http://localhost:4000").replace(/\/$/, "");
+
+/* ---------------------------------------------------------------------
+   TOKEN STORAGE
+   Uses localStorage on web. This throws inside the Claude.ai artifact
+   preview sandbox (browser storage is disabled there), so login won't
+   survive a refresh *in this preview* — that's expected. Once you run
+   this file in your own project (Vite/CRA) or wrap it with Capacitor,
+   storage works normally and the session will persist for real.
+
+   For the Capacitor/Android build specifically, swap this for
+   @capacitor/preferences instead of localStorage — it's the supported,
+   more secure native storage API and avoids WebView storage quirks:
+     import { Preferences } from '@capacitor/preferences';
+     await Preferences.set({ key: 'chatai_token', value: token });
+--------------------------------------------------------------------- */
+let memoryToken = null; // fallback so the preview doesn't crash
+const tokenStorage = {
+  get() {
+    try {
+      return localStorage.getItem("chatai_token");
+    } catch {
+      return memoryToken;
+    }
+  },
+  set(token) {
+    try {
+      localStorage.setItem("chatai_token", token);
+    } catch {
+      memoryToken = token;
+    }
+  },
+  clear() {
+    try {
+      localStorage.removeItem("chatai_token");
+    } catch {
+      memoryToken = null;
+    }
+  },
+};
+
+async function apiFetch(path, options = {}) {
+  const token = tokenStorage.get();
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  let data = {};
+  try {
+    data = await res.json();
+  } catch {
+    // no body
+  }
+  if (!res.ok) {
+    throw new Error(data.error || `Request failed (${res.status})`);
+  }
+  return data;
+}
+
+function Avatar({ role }) {
+  if (role === "user") {
+    return (
+      <div
+        style={{ background: COLORS.teal }}
+        className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold text-black shrink-0"
+      >
+        AP
+      </div>
+    );
+  }
+  return (
+    <div
+      style={{ background: COLORS.amber }}
+      className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+    >
+      <Sparkles size={16} color="#12151A" />
+    </div>
+  );
+}
+
+function Message({ role, content, onRegenerate, canRegenerate }) {
+  const isUser = role === "user";
+  const [copied, setCopied] = useState(false);
+
+  const copyMessage = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard may be unavailable in embedded browsers.
+    }
+  };
+
+  return (
+    <div className={`flex gap-3 ${isUser ? "flex-row-reverse" : ""} mb-6 group`}>
+      <Avatar role={role} />
+      <div className="max-w-[80%] min-w-0">
+        <div
+          className="rounded-2xl px-4 py-3 text-[15px] leading-relaxed whitespace-pre-wrap break-words"
+          style={{
+            background: isUser ? COLORS.teal : COLORS.panel,
+            color: isUser ? "#0B1210" : COLORS.ink,
+            border: isUser ? "none" : `1px solid ${COLORS.panelBorder}`,
+          }}
+        >
+          {content}
+        </div>
+
+        <div className={`flex gap-1 mt-1 ${isUser ? "justify-end" : "justify-start"} opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity`}>
+          <button
+            type="button"
+            onClick={copyMessage}
+            className="p-1.5 rounded-md"
+            style={{ color: COLORS.inkDim }}
+            aria-label="Copy message"
+            title="Copy message"
+          >
+            {copied ? <Check size={14} /> : <Copy size={14} />}
+          </button>
+
+          {!isUser && canRegenerate && (
+            <button
+              type="button"
+              onClick={onRegenerate}
+              className="p-1.5 rounded-md"
+              style={{ color: COLORS.inkDim }}
+              aria-label="Regenerate response"
+              title="Regenerate response"
+            >
+              <RotateCcw size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TypingDots() {
+  return (
+    <div className="flex gap-3 mb-6">
+      <Avatar role="assistant" />
+      <div
+        className="rounded-2xl px-4 py-3 flex items-center gap-1"
+        style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}` }}
+      >
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="w-1.5 h-1.5 rounded-full animate-bounce"
+            style={{ background: COLORS.inkDim, animationDelay: `${i * 0.15}s` }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FullScreenSpinner({ label }) {
+  return (
+    <div
+      className="w-full h-[650px] max-h-[90vh] rounded-xl flex flex-col items-center justify-center gap-3"
+      style={{ background: COLORS.bg, fontFamily: "Inter, system-ui, sans-serif" }}
+    >
+      <span
+        className="w-6 h-6 rounded-full border-2 border-t-transparent animate-spin"
+        style={{ borderColor: `${COLORS.amber}33`, borderTopColor: COLORS.amber }}
+      />
+      <p style={{ color: COLORS.inkDim }} className="text-sm">
+        {label}
+      </p>
+    </div>
+  );
+}
+
+/* ---------------------- Auth screen (login / signup) ---------------------- */
+function AuthScreen({ mode, onSwitchMode, onAuthed }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const isSignup = mode === "signup";
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (loading) return;
+    setError("");
+    setLoading(true);
+    try {
+      const data = await apiFetch(isSignup ? "/api/auth/signup" : "/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify(isSignup ? { name, email, password } : { email, password }),
+      });
+      tokenStorage.set(data.token);
+      onAuthed(data.user);
+    } catch (err) {
+      setError(
+        err.message === "Failed to fetch"
+          ? "Can't reach the server. Check your connection or try again shortly."
+          : err.message || "Something went wrong. Please try again."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div
+      className="w-full h-[650px] max-h-[90vh] rounded-xl overflow-y-auto flex items-center justify-center px-5 py-8"
+      style={{ background: COLORS.bg, fontFamily: "Inter, system-ui, sans-serif" }}
+    >
+      <div className="w-full max-w-sm">
+        <div className="flex flex-col items-center mb-8">
+          <div
+            style={{ background: COLORS.amber }}
+            className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
+          >
+            <Sparkles size={24} color="#12151A" />
+          </div>
+          <h1 style={{ fontFamily: "Fraunces, serif", color: COLORS.ink }} className="text-2xl mb-1">
+            {isSignup ? "Create your account" : "Welcome back"}
+          </h1>
+          <p style={{ color: COLORS.inkDim }} className="text-sm text-center">
+            {isSignup ? "Sign up to start using ChatAI" : "Log in to your ChatAI account"}
+          </p>
+        </div>
+
+        <form onSubmit={submit} className="space-y-3" noValidate>
+          {isSignup && (
+            <div>
+              <label className="block text-xs mb-1.5" style={{ color: COLORS.inkDim }}>
+                Name
+              </label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Jane Doe"
+                autoComplete="name"
+                className="w-full rounded-lg px-3 py-2.5 text-[15px] outline-none"
+                style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`, color: COLORS.ink }}
+              />
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs mb-1.5" style={{ color: COLORS.inkDim }}>
+              Email
+            </label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              autoComplete="email"
+              inputMode="email"
+              className="w-full rounded-lg px-3 py-2.5 text-[15px] outline-none"
+              style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`, color: COLORS.ink }}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs mb-1.5" style={{ color: COLORS.inkDim }}>
+              Password
+            </label>
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                autoComplete={isSignup ? "new-password" : "current-password"}
+                className="w-full rounded-lg px-3 py-2.5 pr-10 text-[15px] outline-none"
+                style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`, color: COLORS.ink }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((s) => !s)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+              >
+                {showPassword ? (
+                  <EyeOff size={17} color={COLORS.inkDim} />
+                ) : (
+                  <Eye size={17} color={COLORS.inkDim} />
+                )}
+              </button>
+            </div>
+          </div>
+
+          {error && (
+            <div
+              className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-sm"
+              style={{ background: "rgba(232,102,77,0.12)", border: `1px solid ${COLORS.danger}`, color: COLORS.danger }}
+              role="alert"
+            >
+              <AlertCircle size={16} className="shrink-0 mt-0.5" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-60"
+            style={{ background: COLORS.amber, color: "#12151A" }}
+          >
+            {loading ? (
+              <>
+                <span
+                  className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent animate-spin"
+                  style={{ borderColor: "#12151A33", borderTopColor: "#12151A" }}
+                />
+                {isSignup ? "Creating account..." : "Logging in..."}
+              </>
+            ) : isSignup ? (
+              "Sign Up"
+            ) : (
+              "Log In"
+            )}
+          </button>
+        </form>
+
+        <p className="text-center text-sm mt-6" style={{ color: COLORS.inkDim }}>
+          {isSignup ? "Already have an account?" : "Don't have an account?"}{" "}
+          <button
+            onClick={() => onSwitchMode(isSignup ? "login" : "signup")}
+            className="font-medium underline underline-offset-2"
+            style={{ color: COLORS.teal }}
+          >
+            {isSignup ? "Log in" : "Sign up"}
+          </button>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------
+   Back-navigation via browser history (unchanged from before): a tiny
+   history stack of "screens" so the hardware/browser Back button closes
+   the mobile sidebar or steps between login/signup instead of leaving
+   the app.
+--------------------------------------------------------------------- */
+export default function ChatAI() {
+  const [screen, setScreen] = useState("checking"); // 'checking' | 'login' | 'signup' | 'chat'
+  const [user, setUser] = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const [chats, setChats] = useState([]);
+  const [activeChatId, setActiveChatId] = useState(null);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [chatsError, setChatsError] = useState("");
+  const scrollRef = useRef(null);
+
+  const activeChat = chats.find((c) => c.id === activeChatId) || null;
+  const messages = activeChat ? activeChat.messages : [];
+
+  const pushHistory = useCallback((state) => {
+    window.history.pushState(state, "");
+  }, []);
+
+  // On first load: try to restore the session from a stored token, then
+  // load that user's chats from the backend (real login + chat persistence).
+  useEffect(() => {
+    window.history.replaceState({ screen: "login", sidebarOpen: false }, "");
+    (async () => {
+      const token = tokenStorage.get();
+      if (!token) {
+        setScreen("login");
+        return;
+      }
+      try {
+        const me = await apiFetch("/api/auth/me");
+        setUser(me.user);
+        await loadChats();
+        setScreen("chat");
+        window.history.replaceState({ screen: "chat", sidebarOpen: false }, "");
+      } catch {
+        tokenStorage.clear();
+        setScreen("login");
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = (e) => {
+      const state = e.state || { screen: "login", sidebarOpen: false };
+      setScreen(state.screen);
+      setSidebarOpen(!!state.sidebarOpen);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages, loading]);
+
+  const loadChats = async () => {
+    setChatsError("");
+    try {
+      const data = await apiFetch("/api/chats");
+      if (data.chats.length > 0) {
+        setChats(data.chats);
+        setActiveChatId(data.chats[0].id);
+      } else {
+        const created = await apiFetch("/api/chats", { method: "POST" });
+        setChats([created.chat]);
+        setActiveChatId(created.chat.id);
+      }
+    } catch (err) {
+      setChatsError("Couldn't load your chats. Check your connection and try refreshing.");
+    }
+  };
+
+  const switchAuthMode = (mode) => {
+    setScreen(mode);
+    pushHistory({ screen: mode, sidebarOpen: false });
+  };
+
+  const handleAuthed = async (authedUser) => {
+    setUser(authedUser);
+    await loadChats();
+    setScreen("chat");
+    pushHistory({ screen: "chat", sidebarOpen: false });
+  };
+
+  const handleLogout = () => {
+    tokenStorage.clear();
+    setUser(null);
+    setChats([]);
+    setActiveChatId(null);
+    setSidebarOpen(false);
+    setScreen("login");
+    pushHistory({ screen: "login", sidebarOpen: false });
+  };
+
+  const openSidebar = () => {
+    setSidebarOpen(true);
+    pushHistory({ screen: "chat", sidebarOpen: true });
+  };
+
+  const closeSidebar = () => {
+    setSidebarOpen(false);
+    if (window.history.state && window.history.state.sidebarOpen) {
+      window.history.back();
+    }
+  };
+
+  const updateMessages = (chatId, newMessages) => {
+    setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, messages: newMessages } : c)));
+  };
+
+  const renameChat = async (chat) => {
+    const nextTitle = window.prompt("Rename chat", chat.title);
+    if (!nextTitle?.trim() || nextTitle.trim() === chat.title) return;
+
+    const title = nextTitle.trim().slice(0, 80);
+    setChats((prev) => prev.map((c) => (c.id === chat.id ? { ...c, title } : c)));
+
+    try {
+      await apiFetch(`/api/chats/${chat.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ title }),
+      });
+    } catch {
+      setChatsError("Couldn't rename the chat. Please try again.");
+    }
+  };
+
+  const regenerateResponse = async (chatId) => {
+    if (loading) return;
+
+    const chat = chats.find((c) => c.id === chatId);
+    if (!chat || chat.messages.length === 0) return;
+
+    const lastUserIndex = [...chat.messages].map((m) => m.role).lastIndexOf("user");
+    if (lastUserIndex < 0) return;
+
+    const baseMessages = chat.messages.slice(0, lastUserIndex + 1);
+    updateMessages(chatId, baseMessages);
+    setLoading(true);
+
+    try {
+      const data = await apiFetch("/api/chat/send", {
+        method: "POST",
+        body: JSON.stringify({ messages: baseMessages }),
+      });
+
+      const finalMessages = [
+        ...baseMessages,
+        { role: "assistant", content: data.reply },
+      ];
+
+      updateMessages(chatId, finalMessages);
+      persistChat(chatId, { title: chat.title, messages: finalMessages });
+    } catch {
+      updateMessages(chatId, [
+        ...baseMessages,
+        { role: "assistant", content: "Something went wrong. Please try again." },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const persistChat = (chatId, patch) => {
+    apiFetch(`/api/chats/${chatId}`, { method: "PUT", body: JSON.stringify(patch) }).catch(() => {
+      // Best-effort: if this fails the message still shows locally, but
+      // won't survive a refresh. A production app would queue a retry here.
+    });
+  };
+
+  const newChat = async () => {
+    try {
+      const data = await apiFetch("/api/chats", { method: "POST" });
+      setChats((prev) => [data.chat, ...prev]);
+      setActiveChatId(data.chat.id);
+    } catch {
+      setChatsError("Couldn't create a new chat. Check your connection.");
+    }
+    closeSidebar();
+  };
+
+  const deleteChat = async (id, e) => {
+    e.stopPropagation();
+    if (!window.confirm("Delete this chat? This action cannot be undone.")) return;
+    const remaining = chats.filter((c) => c.id !== id);
+    setChats(remaining);
+    if (id === activeChatId && remaining.length > 0) setActiveChatId(remaining[0].id);
+    apiFetch(`/api/chats/${id}`, { method: "DELETE" }).catch(() => {});
+    if (remaining.length === 0) newChat();
+  };
+
+  const sendMessage = async (text) => {
+    const messageText = (text || input).trim();
+    if (!messageText || loading || !activeChatId) return;
+
+    const chatId = activeChatId;
+    const newUserMsg = { role: "user", content: messageText };
+    const updated = [...messages, newUserMsg];
+    updateMessages(chatId, updated);
+    setInput("");
+    setLoading(true);
+
+    const isFirstMessage = updated.length === 1;
+    const title = isFirstMessage
+      ? messageText.slice(0, 32) + (messageText.length > 32 ? "…" : "")
+      : activeChat.title;
+    if (isFirstMessage) {
+      setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, title } : c)));
+    }
+    persistChat(chatId, { title, messages: updated });
+
+    try {
+      const data = await apiFetch("/api/chat/send", {
+        method: "POST",
+        body: JSON.stringify({ messages: updated }),
+      });
+      const finalMessages = [...updated, { role: "assistant", content: data.reply }];
+      updateMessages(chatId, finalMessages);
+      persistChat(chatId, { title, messages: finalMessages });
+    } catch (err) {
+      const finalMessages = [
+        ...updated,
+        { role: "assistant", content: "Something went wrong. Please try again." },
+      ];
+      updateMessages(chatId, finalMessages);
+      persistChat(chatId, { title, messages: finalMessages });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
+
+  if (screen === "checking") {
+    return <FullScreenSpinner label="Checking your session..." />;
+  }
+
+  if (screen === "login" || screen === "signup") {
+    return <AuthScreen mode={screen} onSwitchMode={switchAuthMode} onAuthed={handleAuthed} />;
+  }
+
+  return (
+    <div
+      className="flex w-full h-[650px] max-h-[90vh] rounded-xl overflow-hidden relative"
+      style={{ background: COLORS.bg, fontFamily: "Inter, system-ui, sans-serif" }}
+    >
+      {/* Sidebar */}
+      <div
+        className={`absolute md:static inset-y-0 left-0 z-20 w-64 flex flex-col transition-transform duration-200 ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+        }`}
+        style={{ background: "#0E1116", borderRight: `1px solid ${COLORS.panelBorder}` }}
+      >
+        <div className="p-3 flex items-center justify-between">
+          <div className="flex items-center gap-2 px-1">
+            <div
+              style={{ background: COLORS.amber }}
+              className="w-6 h-6 rounded-md flex items-center justify-center"
+            >
+              <Sparkles size={14} color="#12151A" />
+            </div>
+            <span style={{ fontFamily: "Fraunces, serif", color: COLORS.ink }} className="text-lg">
+              ChatAI
+            </span>
+          </div>
+          <button onClick={closeSidebar} className="md:hidden p-1">
+            <X size={18} color={COLORS.inkDim} />
+          </button>
+        </div>
+
+        <button
+          onClick={newChat}
+          className="mx-3 mb-3 flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium"
+          style={{ border: `1px solid ${COLORS.panelBorder}`, color: COLORS.ink }}
+        >
+          <Plus size={16} /> New Chat
+        </button>
+
+        {chatsError && (
+          <div
+            className="mx-3 mb-3 flex items-start gap-2 rounded-lg px-3 py-2 text-xs"
+            style={{ background: "rgba(232,102,77,0.12)", border: `1px solid ${COLORS.danger}`, color: COLORS.danger }}
+          >
+            <AlertCircle size={14} className="shrink-0 mt-0.5" />
+            <span>{chatsError}</span>
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto px-2 space-y-1">
+          {chats.map((c) => (
+            <div
+              key={c.id}
+              onClick={() => {
+                setActiveChatId(c.id);
+                closeSidebar();
+              }}
+              className="group flex items-center justify-between rounded-lg px-3 py-2 text-sm cursor-pointer"
+              style={{
+                background: c.id === activeChatId ? COLORS.panel : "transparent",
+                color: c.id === activeChatId ? COLORS.ink : COLORS.inkDim,
+              }}
+            >
+              <span className="truncate">{c.title}</span>
+              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 shrink-0 ml-2">
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); renameChat(c); }}
+                  className="p-1 rounded"
+                  aria-label={`Rename ${c.title}`}
+                  title="Rename chat"
+                >
+                  <Pencil size={13} />
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => deleteChat(c.id, e)}
+                  className="p-1 rounded"
+                  aria-label={`Delete ${c.title}`}
+                  title="Delete chat"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div
+          className="p-3 flex items-center justify-between"
+          style={{ borderTop: `1px solid ${COLORS.panelBorder}` }}
+        >
+          <div className="min-w-0">
+            <p className="text-sm truncate" style={{ color: COLORS.ink }}>
+              {user?.name || "Guest"}
+            </p>
+            <p className="text-xs truncate" style={{ color: COLORS.inkDim }}>
+              {user?.email}
+            </p>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="p-1.5 rounded-lg shrink-0"
+            style={{ border: `1px solid ${COLORS.panelBorder}` }}
+            aria-label="Log out"
+            title="Log out"
+          >
+            <LogOut size={15} color={COLORS.inkDim} />
+          </button>
+        </div>
+      </div>
+
+      {sidebarOpen && (
+        <div className="absolute inset-0 bg-black/50 z-10 md:hidden" onClick={closeSidebar} />
+      )}
+
+      {/* Main */}
+      <div className="flex-1 flex flex-col min-w-0">
+        <div
+          className="flex items-center gap-3 px-4 py-3 md:hidden"
+          style={{ borderBottom: `1px solid ${COLORS.panelBorder}` }}
+        >
+          <button onClick={openSidebar}>
+            <Menu size={20} color={COLORS.ink} />
+          </button>
+          <span style={{ fontFamily: "Fraunces, serif", color: COLORS.ink }}>ChatAI</span>
+        </div>
+
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 md:px-8 py-6">
+          {messages.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center text-center px-4">
+              <div
+                style={{ background: COLORS.amber }}
+                className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
+              >
+                <Sparkles size={24} color="#12151A" />
+              </div>
+              <h1 style={{ fontFamily: "Fraunces, serif", color: COLORS.ink }} className="text-2xl mb-2">
+                What can I help with today?
+              </h1>
+              <p style={{ color: COLORS.inkDim }} className="mb-8 text-sm">
+                Ask ChatAI, write with it, or learn something new — anything at all.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-md w-full">
+                {STARTER_PROMPTS.map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => sendMessage(p)}
+                    className="text-left text-sm rounded-lg px-3 py-2.5"
+                    style={{
+                      border: `1px solid ${COLORS.panelBorder}`,
+                      color: COLORS.ink,
+                      background: COLORS.panel,
+                    }}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="max-w-2xl mx-auto">
+              {messages.map((m, i) => (
+                <Message
+                  key={i}
+                  role={m.role}
+                  content={m.content}
+                  canRegenerate={m.role === "assistant" && i === messages.length - 1}
+                  onRegenerate={() => regenerateResponse(activeChatId)}
+                />
+              ))}
+              {loading && <TypingDots />}
+            </div>
+          )}
+        </div>
+
+        <div className="px-4 md:px-8 pb-4 pt-2">
+          <div
+            className="max-w-2xl mx-auto flex items-end gap-2 rounded-2xl px-3 py-2"
+            style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}` }}
+          >
+            <textarea
+              value={input}
+              onChange={(e) => {
+                setInput(e.target.value);
+                e.currentTarget.style.height = "auto";
+                e.currentTarget.style.height = `${Math.min(e.currentTarget.scrollHeight, 128)}px`;
+              }}
+              onKeyDown={handleKeyDown}
+              placeholder="Type your message..."
+              rows={1}
+              aria-label="Message"
+              className="flex-1 bg-transparent outline-none resize-none text-[15px] py-1.5 max-h-32 overflow-y-auto"
+              style={{ color: COLORS.ink, minHeight: "36px" }}
+            />
+            <button
+              type="button"
+              onClick={() => sendMessage()}
+              disabled={!input.trim() || loading}
+              aria-label="Send message"
+              title="Send message"
+              className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 disabled:opacity-40"
+              style={{ background: COLORS.amber }}
+            >
+              <Send size={16} color="#12151A" />
+            </button>
+          </div>
+          <p className="text-center text-xs mt-2" style={{ color: COLORS.inkDim }}>
+            ChatAI can make mistakes. Verify important information.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
