@@ -1,0 +1,18 @@
+# Gradle files
+.gradle/
+build/
+*.apk
+*.aab
+*.zip
+
+# Android Studio
+.idea/
+*.iml
+local.properties
+
+# Capacitor
+capacitor.config.json
+node_modules/
+
+# General
+.DS_Store
