@@ -1,0 +1,93 @@
+name: Android Build & APK Release
+
+on:
+  push:
+    branches:
+      - android/capacitor-androidize
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build web app
+        run: npm run build
+        env:
+          VITE_API_BASE: ${{ secrets.VITE_API_BASE || 'http://localhost:4000' }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v2
+        with:
+          api-levels: 34
+          build-tools-version: 34.0.0
+
+      - name: Add Android SDK to PATH
+        run: echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+
+      - name: Copy web build to Android assets
+        run: |
+          mkdir -p android/app/src/main/assets/public
+          cp -r dist/* android/app/src/main/assets/public/ || true
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Build release AAB
+        working-directory: android
+        run: |
+          ./gradlew bundleRelease
+
+      - name: Upload debug APK to artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: chatai-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      - name: Upload release AAB to artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: chatai-release-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          retention-days: 30
+
+      - name: Print build summary
+        if: success()
+        run: |
+          echo "============================================"
+          echo "✅ Android Build Successful!"
+          echo "============================================"
+          echo "Debug APK: android/app/build/outputs/apk/debug/app-debug.apk"
+          echo "Release AAB: android/app/build/outputs/bundle/release/app-release.aab"
+          echo ""
+          echo "📱 To install the debug APK:"
+          echo "   1. Download from GitHub Actions artifacts"
+          echo "   2. adb install -r app-debug.apk"
+          echo "   OR"
+          echo "   3. Copy to device and tap to install"
+          echo "============================================"
